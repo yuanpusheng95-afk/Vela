@@ -1,0 +1,333 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-28T08:31:51.133Z",
+  "source": "controller-export",
+  "project": {
+    "id": "vela-self",
+    "name": "航向 Vela",
+    "repository": "vela-agent-workspace",
+    "direction": {
+      "version": 1,
+      "at": "2026-10-28T08:11:57.346Z",
+      "goal": "让人只掌握产品方向，由 AI 自主完成调查、改进、验证，并交付可追溯的结果。先用 Vela 自身验证这条研发闭环。",
+      "constraints": [
+        "保留单侧栏、会话与按需打开的工具区。",
+        "真实执行和示例数据必须明确区分。",
+        "本阶段候选只可改进 dist/ 下的产品界面和 README.md；控制器、验证器、运行包与本策略由稳定控制器维护。",
+        "不触发外部发布、消息发送、付费操作、插件安装或凭据变更。"
+      ]
+    }
+  },
+  "repository": {
+    "head": "31e905a9ccf6cd908e3ffb9b476ab29a790d6269",
+    "branch": "main",
+    "trackedFiles": 27,
+    "uncommittedFiles": [],
+    "files": [
+      ".gitignore",
+      ".openai/hosting.json",
+      "README.md",
+      "controller/bootstrap.mjs",
+      "controller/cli.mjs",
+      "controller/controller.mjs",
+      "controller/harness.mjs",
+      "controller/policy.json",
+      "controller/process.mjs",
+      "controller/repository.mjs",
+      "controller/server.mjs",
+      "controller/store.mjs",
+      "controller/verify-ui.mjs",
+      "dist/app.js",
+      "dist/harness-ui.css",
+      "dist/harness-ui.js",
+      "dist/index.html",
+      "dist/self-development.json",
+      "dist/self-ui.css",
+      "dist/self-ui.js",
+      "dist/shell-ui.css",
+      "dist/shell-ui.js",
+      "dist/styles.css",
+      "package.json",
+      "runtime/harness/package-lock.json",
+      "runtime/harness/package.json",
+      "tests/controller.test.mjs"
+    ]
+  },
+  "runtime": {
+    "engine": "deepseek-harness",
+    "contract": "dsh-headless-ndjson-v1",
+    "expectedVersion": "0.2.1-rc.3",
+    "installedVersion": "0.2.1-rc.3",
+    "lockHash": "68eb946a9edaa601e88e6c09b4890b02f631376e1e611f8bf68365cbf208f599",
+    "ready": false,
+    "blockers": [
+      {
+        "code": "model_credentials",
+        "message": "等待本地 DEEPSEEK_API_KEY；凭据不通过网页或聊天提交。"
+      }
+    ],
+    "probe": {
+      "at": "2026-10-28T08:11:59.389Z",
+      "version": "0.2.1-rc.3",
+      "contract": "dsh-headless-ndjson-v1",
+      "passed": true,
+      "code": 0,
+      "detail": "固定版本 headless 已启动；JSON 事件和会话标识选项存在。未调用模型。"
+    },
+    "nodeVersion": "v24.22.1"
+  },
+  "runs": [
+    {
+      "id": "e247b4a8-b1d1-4379-8e17-8048c3ecfead",
+      "status": "blocked",
+      "engine": "deepseek-harness",
+      "directionVersion": 1,
+      "runtimeVersion": "0.2.1-rc.3",
+      "baseSha": "31e905a9ccf6cd908e3ffb9b476ab29a790d6269",
+      "createdAt": "2026-10-28T08:31:51.103Z",
+      "updatedAt": "2026-10-28T08:31:51.103Z",
+      "blockers": [
+        {
+          "code": "model_credentials",
+          "message": "等待本地 DEEPSEEK_API_KEY；凭据不通过网页或聊天提交。"
+        }
+      ],
+      "changedFiles": [],
+      "deployment": "not_deployed",
+      "productOutcome": "unmeasured",
+      "events": [
+        {
+          "seq": 1,
+          "at": "2026-10-28T08:31:51.103Z",
+          "kind": "run.created",
+          "payload": {
+            "status": "blocked",
+            "engine": "deepseek-harness",
+            "baseSha": "31e905a9ccf6cd908e3ffb9b476ab29a790d6269"
+          }
+        },
+        {
+          "seq": 2,
+          "at": "2026-10-28T08:31:51.106Z",
+          "kind": "run.blocked",
+          "payload": {
+            "blockers": [
+              {
+                "code": "model_credentials",
+                "message": "等待本地 DEEPSEEK_API_KEY；凭据不通过网页或聊天提交。"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "bootstrap": {
+    "schemaVersion": 1,
+    "engine": "external-codex",
+    "kind": "bootstrap",
+    "title": "建立本地最小控制器与真实记录界面",
+    "status": "engineering_verified",
+    "at": "2026-10-28T08:31:51.063Z",
+    "baseSha": "4e1aa7711fa12797b823c75450306a7ac075b366",
+    "codeSha": "31e905a9ccf6cd908e3ffb9b476ab29a790d6269",
+    "checks": [
+      {
+        "name": "控制器与 Git 闭环回归",
+        "passed": true,
+        "durationMs": 4728,
+        "report": {
+          "tests": 16,
+          "passed": 16,
+          "failed": 0
+        },
+        "logHash": "e7eb8e007962059c62a94407b11d391cc5797881c1bcd986ac71b7f74aebc51a"
+      },
+      {
+        "name": "工作台工程检查",
+        "passed": true,
+        "durationMs": 465,
+        "report": {
+          "passed": true,
+          "checks": [
+            {
+              "name": "入口与本地资源引用",
+              "passed": true,
+              "detail": "8 个资源存在"
+            },
+            {
+              "name": "JavaScript · dist/app.js",
+              "passed": true,
+              "detail": "语法检查通过"
+            },
+            {
+              "name": "JavaScript · dist/harness-ui.js",
+              "passed": true,
+              "detail": "语法检查通过"
+            },
+            {
+              "name": "JavaScript · dist/self-ui.js",
+              "passed": true,
+              "detail": "语法检查通过"
+            },
+            {
+              "name": "JavaScript · dist/shell-ui.js",
+              "passed": true,
+              "detail": "语法检查通过"
+            },
+            {
+              "name": "既有会话、插件与工具区入口",
+              "passed": true,
+              "detail": "稳定验证器检查核心界面入口仍存在；不替代浏览器验收"
+            }
+          ]
+        },
+        "logHash": "92968ee2de201f7f79496e002a89d36c90deda35941b283cf7b424dde9785b87"
+      }
+    ],
+    "changedFiles": [
+      {
+        "path": ".gitignore",
+        "added": 10,
+        "removed": 0
+      },
+      {
+        "path": "README.md",
+        "added": 98,
+        "removed": 24
+      },
+      {
+        "path": "controller/bootstrap.mjs",
+        "added": 37,
+        "removed": 0
+      },
+      {
+        "path": "controller/cli.mjs",
+        "added": 47,
+        "removed": 0
+      },
+      {
+        "path": "controller/controller.mjs",
+        "added": 206,
+        "removed": 0
+      },
+      {
+        "path": "controller/harness.mjs",
+        "added": 81,
+        "removed": 0
+      },
+      {
+        "path": "controller/policy.json",
+        "added": 21,
+        "removed": 0
+      },
+      {
+        "path": "controller/process.mjs",
+        "added": 65,
+        "removed": 0
+      },
+      {
+        "path": "controller/repository.mjs",
+        "added": 117,
+        "removed": 0
+      },
+      {
+        "path": "controller/server.mjs",
+        "added": 84,
+        "removed": 0
+      },
+      {
+        "path": "controller/store.mjs",
+        "added": 85,
+        "removed": 0
+      },
+      {
+        "path": "controller/verify-ui.mjs",
+        "added": 39,
+        "removed": 0
+      },
+      {
+        "path": "dist/app.js",
+        "added": 2,
+        "removed": 2
+      },
+      {
+        "path": "dist/harness-ui.js",
+        "added": 3,
+        "removed": 1
+      },
+      {
+        "path": "dist/index.html",
+        "added": 3,
+        "removed": 1
+      },
+      {
+        "path": "dist/self-development.json",
+        "added": 108,
+        "removed": 0
+      },
+      {
+        "path": "dist/self-ui.css",
+        "added": 18,
+        "removed": 0
+      },
+      {
+        "path": "dist/self-ui.js",
+        "added": 168,
+        "removed": 0
+      },
+      {
+        "path": "dist/shell-ui.js",
+        "added": 5,
+        "removed": 4
+      },
+      {
+        "path": "package.json",
+        "added": 14,
+        "removed": 0
+      },
+      {
+        "path": "runtime/harness/package-lock.json",
+        "added": 9865,
+        "removed": 0
+      },
+      {
+        "path": "runtime/harness/package.json",
+        "added": 6,
+        "removed": 0
+      },
+      {
+        "path": "tests/controller.test.mjs",
+        "added": 238,
+        "removed": 0
+      }
+    ],
+    "provenance": "由当前外部 Codex 助手完成引导开发；不是 Harness 自主运行。",
+    "deployment": "separately_tracked",
+    "productOutcome": "unmeasured",
+    "evidenceHash": "1d81b20ad6ddf92aa1e678786f8935ddc16660598e94ed8961bb78197cedefde"
+  },
+  "acceptance": {
+    "id": "frozen-ui-v1",
+    "scope": "工程静态检查；浏览器行为、实际桌面资源占用与产品效果尚待验证",
+    "maxRunSeconds": 300,
+    "maxChangedFiles": 12,
+    "allowed": [
+      "dist/",
+      "README.md"
+    ],
+    "protected": [
+      "dist/self-development.json"
+    ]
+  },
+  "metrics": {
+    "attempts": 1,
+    "integrated": 0,
+    "productSuccess": null
+  },
+  "limitations": [
+    "这是第一轮本地控制器，尚未接入 Tauri 或原生 Harness 客户端。",
+    "工程检查通过不代表产品有效；当前不自动发布。",
+    "Harness 版本固定，新版本先通过 Runner 合约检查后切换；已有记录保留原版本。"
+  ]
+}

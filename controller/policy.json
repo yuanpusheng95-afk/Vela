@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "projectId": "vela-self",
+  "name": "航向 Vela",
+  "direction": "让人只掌握产品方向，由 AI 自主完成调查、改进、验证，并交付可追溯的结果。先用 Vela 自身验证这条研发闭环。",
+  "constraints": [
+    "保留单侧栏、会话与按需打开的工具区。",
+    "真实执行和示例数据必须明确区分。",
+    "本阶段候选只可改进 dist/ 下的产品界面和 README.md；控制器、验证器、运行包与本策略由稳定控制器维护。",
+    "不触发外部发布、消息发送、付费操作、插件安装或凭据变更。"
+  ],
+  "allowedPrefixes": ["dist/"],
+  "allowedFiles": ["README.md"],
+  "protectedFiles": ["dist/self-development.json"],
+  "maxRunSeconds": 300,
+  "maxOutputBytes": 2097152,
+  "maxChangedFiles": 12,
+  "maxDiffBytes": 524288,
+  "harnessVersion": "0.2.1-rc.3",
+  "verification": "frozen-ui-v1"
+}

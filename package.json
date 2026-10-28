@@ -1,0 +1,14 @@
+{
+  "name": "vela-autonomous-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "check": "node controller/verify-ui.mjs .",
+    "controller": "node controller/cli.mjs",
+    "serve": "node controller/server.mjs",
+    "harness:install": "npm ci --prefix runtime/harness --ignore-scripts"
+  }
+}
