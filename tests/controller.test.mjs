@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Store } from '../controller/store.mjs';
@@ -9,6 +9,8 @@ import { HarnessRunner } from '../controller/harness.mjs';
 import { git } from '../controller/repository.mjs';
 import { command } from '../controller/process.mjs';
 import { startServer } from '../controller/server.mjs';
+import { verifyUI } from '../controller/verify-ui.mjs';
+import { inspectRepository } from '../controller/repository.mjs';
 
 const policy = {
   schemaVersion: 1, projectId: 'test', name: 'Fixture', direction: 'Improve a fixture', constraints: ['Fixture only'],
@@ -78,6 +80,56 @@ test('syntax errors fail independent verification without changing source', asyn
   assert.equal(run.status, 'failed');
   assert.equal((await git(root, ['rev-parse', 'HEAD'])).trim(), head);
   assert.ok(run.verification.checks.some(check => !check.passed));
+  assert.match(run.failure, /JavaScript/);
+  const log = await readFile(join(root,'.vela/runs',run.id,'verification.log'),'utf8');
+  assert.match(log, /SyntaxError/);
+  assert.ok(!(await c.diagnostics(run.id)).verificationLog.includes('DEEPSEEK_API_KEY='));
+});
+
+test('validator accepts a canonical-equivalent linked root and still rejects escaping assets', async t => {
+  const { root } = await fixture(t);
+  const dir=await mkdtemp(join(tmpdir(),'vela-linked-'));
+  t.after(()=>rm(dir,{recursive:true,force:true}));
+  const alias=join(dir,'project'); await symlink(root,alias,'dir');
+  assert.equal((await verifyUI(alias)).passed,true);
+  await writeFile(join(dir,'outside.js'),'const secret=1;');
+  await symlink(join(dir,'outside.js'),join(root,'dist/outside.js'));
+  await writeFile(join(root,'dist/index.html'),'<script src="./outside.js"></script>');
+  await assert.rejects(verifyUI(alias),/invalid_asset/);
+});
+
+test('ZIP or a nested parent repository has an explicit blocked state, never operates on its parent', async t => {
+  const { root,head,runner }=await fixture(t);
+  const child=join(root,'zip-download');await mkdir(join(child,'dist'),{recursive:true});await writeFile(join(child,'dist/index.html'),'<html>ZIP</html>');
+  const c=await Controller.open(child,{policy,runner});
+  try{
+    assert.equal((await inspectRepository(child)).state,'uninitialized');
+    const app=await startServer(child,{port:0,controller:c});
+    try{const response=await fetch(app.url+'/api/snapshot'),snapshot=await response.json();assert.equal(response.status,200);assert.equal(snapshot.source,'local-controller');assert.equal(snapshot.repository.state,'uninitialized');assert.equal(snapshot.runtime.ready,false);}finally{await app.close();}
+    c.shuttingDown=false;
+    const run=await c.run();assert.equal(run.status,'blocked');assert.ok(run.blockers.some(b=>b.message.includes('上级 Git 仓库')));
+    assert.equal((await git(root,['rev-parse','HEAD'])).trim(),head);
+  }finally{c.close();}
+});
+
+test('legacy run details restore useful model/tool output, hide reasoning and support paging', async t => {
+  const {c,root}=await fixture(t);
+  const run=c.store.create({directionVersion:c.store.direction().version,engine:'fixture-test',baseSha:'old'});
+  const raw=[{type:'session',sessionId:'old-session'},{type:'thinking',text:'private-reasoning-do-not-export'},{type:'text',text:'## 方案\n保留错误详情。'},{type:'tool_call',callId:'call-1',tool:'bash',input:{command:'npm test'}},{type:'tool_result',callId:'call-1',status:'error',result:'SyntaxError sk-fixturecredential1234567890'},{type:'final',text:'候选已实现，等待验证。'}];
+  for(const event of raw)c.store.record(run.id,'harness.'+event.type,{type:event.type});
+  c.store.update(run.id,'preparing','failed','verification.failed',{failure:'invalid_asset: ./styles.css',verification:{passed:false,error:'invalid_asset: ./styles.css'}});
+  const dir=join(root,'.vela/runs',run.id);await mkdir(dir,{recursive:true});await writeFile(join(dir,'stdout.jsonl'),raw.map(e=>JSON.stringify(e)).join('\n')+'\n');
+  await writeFile(join(dir,'stderr.log'),'diagnostic Bearer fixture-private-token');
+  const detail=await c.runDetails(run.id,{limit:3});assert.equal(detail.events.length,3);assert.equal(detail.hasMore,true);
+  const older=await c.runDetails(run.id,{limit:100,before:detail.beforeSeq});assert.ok(older.events.every(e=>e.seq<detail.beforeSeq));
+  const diagnostic=await c.diagnostics(run.id),text=JSON.stringify(diagnostic);
+  assert.ok(!text.includes('private-reasoning-do-not-export'));assert.ok(!text.includes('sk-fixturecredential'));assert.match(text,/REDACTED/);
+  assert.ok(!text.includes('fixture-private-token'));
+  assert.equal(diagnostic.events.find(e=>e.kind==='harness.tool_result').payload.tool,'bash');
+  assert.match(diagnostic.events.find(e=>e.kind==='harness.text').payload.text,/方案/);
+  const exported=await c.snapshot();assert.ok(!JSON.stringify(exported).includes('npm test'));
+  const app=await startServer(root,{port:0,controller:c});
+  try{const response=await fetch(app.url+`/api/runs/${run.id}/diagnostics`);assert.equal(response.status,200);assert.match(response.headers.get('content-disposition'),/attachment/);assert.equal((await response.json()).run.failure,'invalid_asset: ./styles.css');}finally{await app.close();}
 });
 
 test('tampered verification evidence cannot authorize integration', async t => {

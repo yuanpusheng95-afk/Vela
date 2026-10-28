@@ -26,76 +26,80 @@ function selfSessionRun() {
   const id = currentSession()?.realRun;
   return selfData.snapshot?.runs.find(run => run.id === id) || selfData.snapshot?.runs[0] || null;
 }
-function selfModeLabel() { return selfData.loading ? '读取真实记录' : selfData.error ? '记录暂不可用' : selfData.snapshot?.source === 'local-controller' ? '本地控制器 · 实时' : '真实记录 · 只读快照'; }
+function selfModeLabel() { return selfData.loading ? '读取真实记录' : selfData.error ? '连接中断 · 保留记录' : selfData.snapshot?.source === 'qa-fixture' ? '验收样本 · 非模型实跑' : selfData.snapshot?.source === 'local-controller' ? '本地控制器 · 实时' : '真实记录 · 只读快照'; }
 function selfShort(sha) { return sha ? sha.slice(0, 9) : '尚未产生'; }
-function selfTime(value) { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false, timeZone: 'UTC' }) + ' UTC' : '—'; }
+function selfTime(value) { return formatRunTime(value); }
+
 function selfPill(status) { return pill(selfStatusLabels[status] || status, ['failed','blocked','interrupted'].includes(status) ? 'amber' : status === 'integrated' ? 'green' : ''); }
 function selfHeading(title, copy, actions = '') { return pageHeading(esc(title), esc(copy), actions, 'VELA · SELF DEVELOPMENT'); }
 function selfRunButton() {
-  const data = selfData.snapshot, local = data?.source === 'local-controller';
-  const active = data?.runs.find(run => selfActiveStatuses.includes(run.status));
-  if (active && local) return button('停止本轮', 'self-cancel', '', 'pause', `data-run="${esc(active.id)}" ${selfData.pending ? 'disabled' : ''}`);
-  return button(local ? '自主推进一轮' : '连接本地控制器', local ? 'self-run' : 'self-connect', 'primary', local ? 'play' : 'terminal', selfData.pending ? 'disabled' : '');
+  const data=selfData.snapshot,local=data?.source==='local-controller';
+  if(selfData.error)return button('重新连接','self-refresh','','refresh');
+  if(data?.repository.state==='uninitialized')return button('建立 Git 基线','self-connect','','git');
+  const active=data?.runs.find(run=>selfActiveStatuses.includes(run.status));
+  if(active&&local)return button('停止本轮','self-cancel','','pause',`data-run="${esc(active.id)}" ${selfData.pending?'disabled':''}`);
+  return button(selfData.pending?'正在创建工作…':local?'自主推进一轮':'连接本地控制器',local?'self-run':'self-connect','primary',local?'play':'terminal',selfData.pending?'disabled':'');
 }
+
 function selfSourceBar() {
   const data = selfData.snapshot;
   return `<div class="self-source-bar"><span class="self-source-dot ${data?.source === 'local-controller' ? 'online' : ''}"></span><span>${esc(selfModeLabel())}</span><span class="self-source-time">${data ? '更新于 ' + selfTime(data.generatedAt) : ''}</span><button class="link" data-action="self-refresh" ${selfData.loading ? 'disabled' : ''}>${icon('refresh')}刷新</button></div>`;
 }
-async function loadSelfSnapshot({ quiet = false } = {}) {
-  if (selfData.loading && selfData.snapshot) return;
-  if (!quiet) selfData.loading = true;
-  let data, changed = false;
+async function loadSelfSnapshot({quiet=false}={}) {
+  if(selfData.fetching)return;
+  selfData.fetching=true;selfData.loading=!quiet;let changed=false,data;
+  const loopback=['127.0.0.1','localhost','[::1]'].includes(location.hostname);
   try {
-    const response = await fetch('/api/snapshot', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
-    if (response.ok && response.headers.get('content-type')?.includes('application/json')) data = await response.json();
-  } catch { /* Hosted static preview uses the exported snapshot. */ }
-  try {
-    if (!data || data.schemaVersion !== 1 || data.source !== 'local-controller') {
-      const response = await fetch('./self-development.json', { cache: 'no-store', signal: AbortSignal.timeout(5000) });
-      if (!response.ok) throw new Error('snapshot_unavailable');
-      data = await response.json();
+    let response;
+    try{response=await fetch('/api/snapshot',{cache:'no-store',signal:AbortSignal.timeout(5000)});}
+    catch(error){if(loopback||selfData.snapshot?.source==='local-controller')throw new Error('本地控制器无法连接。请确认 npm run serve 仍在运行，然后重新连接。');}
+    const isJson=response?.headers.get('content-type')?.includes('application/json');
+    const local=loopback||response?.headers.get('x-vela-controller')==='1'||selfData.snapshot?.source==='local-controller';
+    if(isJson){const body=await response.json();if(!response.ok){if(local)throw new Error(body.error||'本地控制器返回错误');}else data=body;}
+    else if(local)throw new Error('本地控制器没有返回有效记录。请使用终端输出的 127.0.0.1 地址访问。');
+    if(!data){const snapshot=await fetch('./self-development.json',{cache:'no-store',signal:AbortSignal.timeout(5000)});if(!snapshot.ok)throw new Error('无法读取导出记录');data=await snapshot.json();}
+    if(data.schemaVersion!==1||data.project?.id!==selfWorkspaceId||!Array.isArray(data.runs))throw new Error('记录格式不兼容，请更新代码并重启控制器。');
+    selfData.csrf=data.csrfToken||null;delete data.csrfToken;
+    changed=!!selfData.error||JSON.stringify({...selfData.snapshot,generatedAt:''})!==JSON.stringify({...data,generatedAt:''});
+    selfData.snapshot=data;selfData.error='';
+    const p=state.projects.find(p=>p.id===selfWorkspaceId);
+    Object.assign(p,{name:data.project.name,path:data.project.repository,direction:data.project.direction.goal,detail:data.project.direction.constraints.join('\n'),version:data.project.direction.version,paused:!data.runtime.ready});
+    const h=state.harness,ids=new Set(data.runs.map(run=>'self-run-'+run.id));
+    h.sessions=h.sessions.filter(s=>s.workspace!==selfWorkspaceId||s.id==='self-controller'||ids.has(s.id));
+    for(const run of [...data.runs].reverse()){
+      const id='self-run-'+run.id,fields={id,workspace:selfWorkspaceId,title:runName(run),owner:'project',isReal:true,realRun:run.id,status:selfActiveStatuses.includes(run.status)?'running':'idle',model:'default',pack:`Harness ${run.runtimeVersion||data.runtime.expectedVersion}`,messages:[]};
+      const existing=h.sessions.find(s=>s.id===id);if(existing)Object.assign(existing,fields);else h.sessions.unshift(fields);
     }
-    if (data.schemaVersion !== 1 || data.project?.id !== selfWorkspaceId || !Array.isArray(data.runs)) throw new Error('snapshot_schema');
-    selfData.csrf = data.csrfToken || null; delete data.csrfToken;
-    changed = JSON.stringify({...selfData.snapshot, generatedAt: ''}) !== JSON.stringify({...data, generatedAt: ''});
-    selfData.snapshot = data; selfData.error = '';
-    const p = state.projects.find(p => p.id === selfWorkspaceId);
-    Object.assign(p, { name: data.project.name, path: data.project.repository, direction: data.project.direction.goal, detail: data.project.direction.constraints.join('\n'), version: data.project.direction.version, paused: !data.runtime.ready });
-    const h = state.harness;
-    const latestIds = new Set(data.runs.map(run => 'self-run-' + run.id));
-    h.sessions = h.sessions.filter(s => s.workspace !== selfWorkspaceId || s.id === 'self-controller' || latestIds.has(s.id));
-    for (const run of [...data.runs].reverse()) {
-      const id = 'self-run-' + run.id;
-      const fields = { id, workspace: selfWorkspaceId, title: `自主迭代 · ${selfStatusLabels[run.status] || run.status}`, owner: 'project', isReal: true, realRun: run.id, status: selfActiveStatuses.includes(run.status) ? 'running' : 'idle', model: 'default', pack: `Harness ${run.runtimeVersion || data.runtime.expectedVersion}`, messages: [] };
-      const existing = h.sessions.find(s => s.id === id); if (existing) Object.assign(existing, fields); else h.sessions.unshift(fields);
-    }
-    if (isSelfWorkspace()) { state.paused = p.paused; if (!currentSession()) h.activeSession = 'self-controller'; }
-  } catch { selfData.error = '暂时无法读取控制器记录。可以刷新重试，或在本地启动工作台。'; }
-  finally {
-    selfData.loading = false;
-    if ((changed || !quiet) && (isSelfWorkspace() || view === 'automation')) render();
+    if(selfData.awaitingRunIds){const created=data.runs.find(run=>!selfData.awaitingRunIds.includes(run.id));if(created){activateWorkspace(selfWorkspaceId);h.activeSession='self-run-'+created.id;h.sessionViews[h.activeSession]='chat';view='workbench';selfData.awaitingRunIds=null;selfData.pending=false;changed=true;}else if(data.serviceError||Date.now()-selfData.launchTime>15000){selfData.pending=false;selfData.awaitingRunIds=null;}}
+    if(isSelfWorkspace()){state.paused=p.paused;if(!currentSession())h.activeSession='self-controller';}
+  }catch(error){selfData.error=error.message||'暂时无法读取控制器记录';selfData.csrf=null;changed=true;}
+  finally{
+    selfData.fetching=false;selfData.loading=false;
+    if((changed||!quiet)&&(isSelfWorkspace()||view==='automation'))render();
+    if(isSelfWorkspace()&&view==='workbench'&&selfData.snapshot?.source==='local-controller'&&!selfData.error)loadRunDetails(selfSessionRun());
     clearTimeout(selfData.refreshTimer);
-    if (selfData.snapshot?.source === 'local-controller') selfData.refreshTimer = setTimeout(() => loadSelfSnapshot({ quiet: true }), 3000);
+    if(loopback||selfData.snapshot?.source==='local-controller')selfData.refreshTimer=setTimeout(()=>loadSelfSnapshot({quiet:true}),3000);
   }
 }
+
 function selfUnavailable() {
   return `<section class="card self-unavailable">${icon(selfData.loading ? 'refresh' : 'alert')}<h2>${selfData.loading ? '读取真实研发记录…' : '暂时无法读取记录'}</h2><p>${esc(selfData.error || '正在连接本地控制器或读取它导出的快照。')}</p>${button('重新读取', 'self-refresh', '', 'refresh')}</section>`;
 }
 function selfBlockers() {
   const blockers = selfData.snapshot?.runtime.blockers || [];
-  return blockers.length ? `<div class="self-blocker"><span class="self-blocker-icon">${icon('key')}</span><div><strong>下一步：连接 DeepSeek 模型</strong>${blockers.map(b => `<p>${esc(b.message)}</p>`).join('')}<small>已安装运行包和控制器可以检查；尚无 Harness 自主改进成果。</small></div>${button('本地连接方式','self-connect','ghost','arrow')}</div>` : '';
+  return blockers.length ? `<div class="self-blocker"><span class="self-blocker-icon">${icon('key')}</span><div><strong>运行条件未满足</strong>${blockers.map(b => `<p>${esc(b.message)}</p>`).join('')}<small>请先处理以上条件，再开始下一轮。</small></div>${button('本地连接方式','self-connect','ghost','arrow')}</div>` : '';
 }
 function selfStats() {
   const data = selfData.snapshot;
-  return `<div class="self-metrics"><div><span>真实仓库</span><strong>${data.repository.trackedFiles}<small>个跟踪文件</small></strong><code>${esc(data.repository.branch || 'detached')} · ${selfShort(data.repository.head)}</code></div><div><span>引导开发</span><strong>${data.bootstrap ? '已验证' : '检查中'}</strong><small>外部 Codex 建立第一版控制器</small></div><div><span>Harness 自主整合</span><strong>${data.metrics.integrated}<small>轮</small></strong><small>${data.metrics.attempts} 次发起记录</small></div><div><span>产品效果</span><strong class="self-unmeasured">待观察</strong><small>独立于工程检查与部署</small></div></div>`;
+  return `<div class="self-metrics"><div><span>真实仓库</span><strong>${data.repository.trackedFiles}<small>个跟踪文件</small></strong><code>${esc(data.repository.branch || 'detached')} · ${selfShort(data.repository.head)}</code></div><div><span>源码基线</span><strong>${data.repository.head?'已就绪':'待建立'}</strong><small>当前本地 Git 源码版本</small></div><div><span>Harness 自主整合</span><strong>${data.metrics.integrated}<small>轮</small></strong><small>${data.metrics.attempts} 次发起记录</small></div><div><span>产品效果</span><strong class="self-unmeasured">待观察</strong><small>独立于工程检查与部署</small></div></div>`;
 }
 function selfBootstrapCard() {
   const b = selfData.snapshot?.bootstrap;
-  if (!b) return `<section class="card self-record-card"><div class="row between"><h2>引导开发正在建立基线</h2>${pill('外部 Codex')}</div><p>控制器代码由当前助手完成。提交并独立验证后，这里展示实际代码版本与检查证据。</p></section>`;
+  if (!b) return `<section class="card self-record-card"><h2>本地源码基线</h2><p>${esc(selfData.snapshot.project.repository)} · ${esc(selfData.snapshot.repository.branch||'未建立')} · ${selfShort(selfData.snapshot.repository.head)}</p><p class="tiny muted">初始引导证据保存在开发环境。本机的研发结果以运行记录为准。</p></section>`;
   return `<section class="card self-record-card"><div class="row between"><div class="row">${icon('check')}<h2>${esc(b.title)}</h2></div>${pill('工程检查通过','green')}</div><p>${esc(b.provenance)}</p><div class="self-commit-pair"><span>基线 <code>${selfShort(b.baseSha)}</code></span>${icon('arrow')}<span>代码 <code>${selfShort(b.codeSha)}</code></span><small>${b.changedFiles.length} 个文件</small></div><div class="self-checks">${b.checks.map(check => `<div>${icon(check.passed?'check':'alert')}<span>${esc(check.name)}</span><small>${check.report.tests ? `${check.report.passed} / ${check.report.tests} 通过` : `${check.report.checks?.length || 0} 项通过`}</small></div>`).join('')}</div><button class="link" data-action="self-bootstrap-details">${selfData.details?'收起':'查看'}变更与验证证据 ${icon('chevron')}</button>${selfData.details?`<div class="self-details"><div class="self-file-list">${b.changedFiles.map(file=>`<div><code>${esc(file.path)}</code><span>+${file.added ?? '—'} −${file.removed ?? '—'}</span></div>`).join('')}</div><p class="tiny muted">证据 SHA-256</p><code class="self-hash">${esc(b.evidenceHash)}</code><p class="tiny muted">记录时间 ${selfTime(b.at)} · 发布与产品效果另行跟踪</p></div>`:''}</section>`;
 }
 function selfRunCard(run) {
-  return `<button class="self-run-row" data-action="self-open-run" data-run="${esc(run.id)}"><span class="self-run-icon">${icon(run.status==='blocked'?'key':run.status==='integrated'?'check':'activity')}</span><div class="grow"><strong>方向驱动的自主迭代</strong><p>${run.summary ? esc(run.summary.slice(0,100)) : run.status==='blocked'?'执行前检查发现缺少条件，未调用模型。':'调查代码，自主选择改进，再交给独立验证。'}</p><small>Harness ${esc(run.runtimeVersion || '未安装')} · ${selfTime(run.createdAt)} · ${selfShort(run.baseSha)}</small></div>${selfPill(run.status)}${icon('chevron')}</button>`;
+  return `<button class="self-run-row" data-action="self-open-run" data-run="${esc(run.id)}"><span class="self-run-icon">${icon(run.status==='blocked'?'key':run.status==='integrated'?'check':'activity')}</span><div class="grow"><strong>${esc(runName(run))}</strong><p>${run.status==='failed'?esc(runFailure(run).title+'：'+runFailure(run).detail.slice(0,100)):run.summary ? esc(run.summary.slice(0,100)) : run.status==='blocked'?'执行前检查发现缺少条件，未调用模型。':'调查代码，自主选择改进，再交给独立验证。'}</p><small>Harness ${esc(run.runtimeVersion || '未安装')} · ${selfTime(run.createdAt)} · ${selfShort(run.baseSha)}</small></div>${selfPill(run.status)}${icon('chevron')}</button>`;
 }
 function renderSelfProjectPage() {
   const data = selfData.snapshot;
@@ -109,27 +113,26 @@ function renderSelfProjectPage() {
 }
 function renderSelfConversation() {
   const s = currentSession(), data = selfData.snapshot, run = selfSessionRun(), d = dockState(), trajectory = sessionView()==='trajectory';
-  return `<section class="conversation-workspace ${d.open&&!d.floating&&!d.fullscreen?'has-dock':''}" style="--dock-width:${Math.max(300,Math.min(800,d.width||520))}px"><section class="conversation-main" aria-label="真实研发记录"><header class="session-header"><button class="icon-btn" data-action="toggle-sidebar" aria-label="展开或收起侧栏">${icon('sliders')}</button><div class="session-heading"><h1>${s.id==='self-controller'?'自主研发 · 当前进展':'方向驱动的自主迭代'}</h1><span>航向 Vela · ${esc(selfModeLabel())}</span></div><div class="grow"></div><button class="icon-btn" data-action="self-refresh" aria-label="刷新真实记录">${icon('refresh')}</button><button class="icon-btn" data-action="open-tools" aria-label="展开右侧工具区">${icon('monitor')}</button></header><div class="session-viewbar"><div role="tablist" aria-label="会话视图">${[['chat','进展'],['trajectory','执行轨迹']].map(([id,title])=>`<button role="tab" aria-selected="${trajectory===(id==='trajectory')}" class="${trajectory===(id==='trajectory')?'active':''}" data-action="conversation-view" data-view="${id}">${title}</button>`).join('')}</div><span class="view-demo self-real-badge">真实记录</span></div><div class="direction-ribbon"><button data-action="select-autonomy" data-workspace="vela-self">${icon('compass')}<span class="ribbon-label">长期方向</span><span class="ribbon-goal">${esc(data?.project.direction.goal || project().direction)}</span></button><button class="ribbon-state" data-action="select-autonomy" data-workspace="vela-self">项目概览 ${icon('chevron')}</button></div><div class="conversation-target"><div id="conversation-feed" class="conversation-feed self-feed" data-session="${esc(s.id)}">${!data?selfUnavailable():trajectory?renderSelfTrajectory(run):renderSelfProgress(run)}</div></div><div class="self-session-footer"><div>${icon('compass')}<span>你调整方向，控制器根据范围推进一轮。</span></div><div class="row">${button('调整方向','self-edit-direction','ghost','sliders')}${selfRunButton()}</div></div></section>${d.open?renderDock(s,d):''}</section>`;
+  return `<section class="conversation-workspace ${d.open&&!d.floating&&!d.fullscreen?'has-dock':''}" style="--dock-width:${Math.max(300,Math.min(800,d.width||520))}px"><section class="conversation-main" aria-label="真实研发记录"><header class="session-header"><button class="icon-btn" data-action="toggle-sidebar" aria-label="展开或收起侧栏">${icon('sliders')}</button><div class="session-heading"><h1>${s.id==='self-controller'?'自主研发 · 当前进展':esc(s.title)}</h1><span>航向 Vela · ${esc(selfModeLabel())}</span></div><div class="grow"></div><button class="icon-btn" data-action="self-refresh" aria-label="刷新真实记录">${icon('refresh')}</button><button class="icon-btn" data-action="open-tools" aria-label="展开右侧工具区">${icon('monitor')}</button></header><div class="session-viewbar"><div role="tablist" aria-label="会话视图">${[['chat','进展'],['trajectory','执行轨迹']].map(([id,title])=>`<button role="tab" aria-selected="${trajectory===(id==='trajectory')}" class="${trajectory===(id==='trajectory')?'active':''}" data-action="conversation-view" data-view="${id}">${title}</button>`).join('')}</div><span class="view-demo self-real-badge">${data?.source==='qa-fixture'?'验收样本':'真实记录'}</span></div><div class="direction-ribbon"><button data-action="select-autonomy" data-workspace="vela-self">${icon('compass')}<span class="ribbon-label">长期方向</span><span class="ribbon-goal">${esc(data?.project.direction.goal || project().direction)}</span></button><button class="ribbon-state" data-action="select-autonomy" data-workspace="vela-self">项目概览 ${icon('chevron')}</button></div><div class="conversation-target"><div id="conversation-feed" class="conversation-feed self-feed ${trajectory?'self-trace-feed':''}" data-session="${esc(s.id)}" data-view="${trajectory?'trajectory':'chat'}">${!data?selfUnavailable():trajectory?renderSelfTrajectory(run):renderSelfProgress(run)}</div></div><div class="self-session-footer"><div>${icon('compass')}<span>你调整方向，控制器根据范围推进一轮。</span></div><div class="row">${button('调整方向','self-edit-direction','ghost','sliders')}${selfRunButton()}</div></div></section>${d.open?renderDock(s,d):''}</section>`;
 }
-function renderSelfProgress(run) {
-  const data=selfData.snapshot;
-  return `<div class="self-feed-intro"><span class="eyebrow">BOOTSTRAP / 01</span><h2>先让研发过程，真实发生。</h2><p>工作台已连接本仓库的实际开发记录。下一轮由 Harness 从长期方向出发，自行调查和选择改进。</p></div>${selfBootstrapCard()}${selfBlockers()}${run?`<section class="card self-record-card"><div class="row between"><h2>本轮 Harness 执行</h2>${selfPill(run.status)}</div><p>${run.status==='blocked'?'执行前检查已记录，尚未向模型发送任务。':esc(run.summary||'控制器按事件记录本轮状态。')}</p>${(run.blockers||[]).map(b=>`<div class="criteria">${icon('alert')}<span>${esc(b.message)}</span></div>`).join('')}<div class="self-commit-pair"><span>基线 <code>${selfShort(run.baseSha)}</code></span><span>方向 v${run.directionVersion}</span><span>${run.events.length} 条事件</span></div>${button('检查执行轨迹','conversation-view','ghost','activity','data-view="trajectory"')}</section>`:''}<p class="self-feed-note">${esc(data.acceptance.scope)}。本次引导由外部 Codex 完成，不计入 Harness 自主迭代。</p>`;
-}
-function renderSelfTrajectory(run) {
-  const records=run?.events || [];
-  return `<div class="self-trace-heading"><h2>持久执行事件</h2><p>${run?`运行 ${run.id.slice(0,8)} · ${selfTime(run.createdAt)}`:'尚无 Harness 执行记录'}</p></div>${records.length?`<div class="self-event-ledger">${records.map(event=>`<details class="self-event"><summary><span class="self-event-seq">${String(event.seq).padStart(2,'0')}</span><span>${esc(selfEventLabels[event.kind]||event.kind)}</span><time>${selfTime(event.at)}</time>${icon('down')}</summary><div><code>${esc(event.kind)}</code><pre>${esc(JSON.stringify(event.payload,null,2))}</pre></div></details>`).join('')}</div>`:'<div class="empty">连接模型后，调查、工具、验证和整合事件会出现在这里。</div>'}<div class="self-trace-caption">事件来自本地 SQLite 的顺序号与时间戳；不推断尚未发生的模型调用、耗时或 Token。</div>`;
-}
+function renderSelfProgress(run) { return renderRunProgress(run); }
+
+function renderSelfTrajectory(run) { return renderRunTrajectory(run); }
+
 function renderSelfDock(tab) {
   const data=selfData.snapshot,run=selfSessionRun();
   if(!data)return selfUnavailable();
   if(tab.kind==='guide')return `<div class="dock-guide"><h2>检查真实证据</h2><p>来自当前仓库与控制器记录。</p><div class="dock-guide-grid">${[['files','folder','仓库文件'],['changes','git','实际变更'],['terminal','terminal','验证结果'],['plan','target','推进边界']].map(([k,i,n])=>`<button data-action="dock-open-kind" data-kind="${k}">${icon(i)}<span>${n}</span>${icon('arrow')}</button>`).join('')}</div></div>`;
   if(tab.kind==='files'||tab.kind==='document')return `<div class="self-dock-content"><h2>真实仓库文件</h2><p>${esc(data.project.repository)} · ${selfShort(data.repository.head)}</p><div class="self-file-list">${data.repository.files.map(path=>`<div>${icon('file')}<code>${esc(path)}</code></div>`).join('')}</div><p class="tiny muted">当前显示已提交文件索引；源码在项目仓库中审阅。</p></div>`;
-  if(tab.kind==='changes')return `<div class="self-dock-content"><h2>实际代码变更</h2><p>${data.bootstrap?'引导开发：'+selfShort(data.bootstrap.baseSha)+' → '+selfShort(data.bootstrap.codeSha):'尚未记录引导提交'}</p><div class="self-file-list">${(data.bootstrap?.changedFiles||[]).map(file=>`<div><code>${esc(file.path)}</code><span>+${file.added??'—'} −${file.removed??'—'}</span></div>`).join('')}</div><h3>Harness 本轮候选</h3><p>${run?.candidateSha?selfShort(run.candidateSha):'尚未产生'}</p>${run?.changedFiles.map(file=>`<code>${esc(file)}</code>`).join('')||''}</div>`;
-  if(tab.kind==='terminal')return `<div class="self-dock-content"><h2>真实验证结果</h2><p>Harness ${esc(data.runtime.installedVersion||'未安装')} · ${data.runtime.probe?.passed?'headless 启动检查通过':'尚未检查'}</p><pre>${esc(JSON.stringify(data.bootstrap?.checks||{status:'等待引导开发验证'},null,2))}</pre><p class="tiny muted">命令退出码只表示工程检查；未连接交互终端。</p></div>`;
+  if(tab.kind==='changes')return `<div class="self-dock-content"><h2>实际代码变更</h2><p>${data.bootstrap?'引导开发：'+selfShort(data.bootstrap.baseSha)+' → '+selfShort(data.bootstrap.codeSha):'尚未记录引导提交'}</p><div class="self-file-list">${(data.bootstrap?.changedFiles||[]).map(file=>`<div><code>${esc(file.path)}</code><span>+${file.added??'—'} −${file.removed??'—'}</span></div>`).join('')}</div><h3>Harness 本轮候选</h3><p>${run?.candidateSha?selfShort(run.candidateSha):'尚未产生'}</p>${run?.changedFiles.map(file=>`<code>${esc(file)}</code>`).join('')||''}${run?.diffHash?button('查看候选差异','self-diff','','git'):''}</div>`;
+  if(tab.kind==='terminal')return `<div class="self-dock-content"><h2>本轮验证结果</h2>${renderRunChecks(run)}</div>`;
+  if(tab.kind==='legacy-terminal')return `<div class="self-dock-content"><h2>真实验证结果</h2><p>Harness ${esc(data.runtime.installedVersion||'未安装')} · ${data.runtime.probe?.passed?'headless 启动检查通过':'尚未检查'}</p><pre>${esc(JSON.stringify(data.bootstrap?.checks||{status:'等待引导开发验证'},null,2))}</pre><p class="tiny muted">命令退出码只表示工程检查；未连接交互终端。</p></div>`;
   if(tab.kind==='plan')return `<div class="self-dock-content"><h2>本轮推进边界</h2>${data.project.direction.constraints.map(c=>`<div class="criteria">${icon('shield')}<span>${esc(c)}</span></div>`).join('')}<p>单轮 ${data.acceptance.maxRunSeconds} 秒，最多 ${data.acceptance.maxChangedFiles} 个文件。</p><p class="tiny muted">缺少模型连接时不生成推测性的 AI 计划。</p></div>`;
   return `<div class="self-dock-content"><h2>尚未接入此能力</h2><p>真实工作空间目前提供文件索引、代码变更和验证证据。</p></div>`;
 }
 function selfConnectionDialog() {
+  if(selfData.snapshot?.repository.state==='uninitialized'){modal('建立 Git 基线','当前目录需要源码基线，才能隔离和验证候选。',renderRepositoryNotice(),button('关闭','close-overlay','primary'));return;}
+  if(selfData.snapshot?.source==='local-controller'){modal('本地控制器已连接','模型、运行包与源码状态分别检查。',`${selfBlockers()}<p class="small muted">运行包：${esc(selfData.snapshot.runtime.installedVersion||'未安装')}；源码：${selfShort(selfData.snapshot.repository.head)}。</p><p class="small muted">当前支持方向驱动的单轮研发。直接聊天和原生桌面功能尚未接入。</p>`,button('关闭','close-overlay','primary'));return;}
   modal('连接本地自主研发控制器','托管页面展示导出快照；本地工作台才能发起真实执行。',`<div class="self-connect-steps"><p>在项目目录使用 Node 24+，完成一次运行包安装：</p><pre>npm run harness:install</pre><p>通过本机环境或凭据管理器给控制器配置 <code>DEEPSEEK_API_KEY</code>，然后运行：</p><pre>npm run controller -- doctor --probe\nnpm run serve</pre><p>打开终端输出的本地地址，点击“自主推进一轮”。控制器会从方向自主选择工作，并记录候选、检查与整合结果。</p><p class="tiny muted">凭据只进入本地子进程；网页不接收 API Key。关闭控制器会结束它拥有的运行。</p></div>`,button('明白了','close-overlay','primary'));
 }
 async function selfPost(path, body) {
@@ -144,20 +147,22 @@ function selfEditDirection() {
 }
 function handleSelfAction(el) {
   const a=el.dataset.action;
+  if(handleRunAction(el))return true;
   if(a==='self-refresh'){loadSelfSnapshot();return true;}
   if(a==='self-connect'){selfConnectionDialog();return true;}
   if(a==='self-edit-direction'){selfEditDirection();return true;}
   if(a==='self-bootstrap-details'){selfData.details=!selfData.details;render();return true;}
-  if(a==='self-open-run'){const s=state.harness.sessions.find(s=>s.realRun===el.dataset.run);if(s)openSessionById(s.id);return true;}
+  if(a==='self-open-run'){const s=state.harness.sessions.find(s=>s.realRun===el.dataset.run);if(s){openSessionById(s.id);loadRunDetails(selfSessionRun());}return true;}
   if(a==='self-run'||a==='self-cancel'){
+    if(a==='self-run'&&selfData.snapshot?.repository.state==='uninitialized'){selfConnectionDialog();return true;}
     if(selfData.pending)return true;
-    selfData.pending=true;render();
-    selfPost(a==='self-run'?'/api/runs':'/api/cancel',a==='self-run'?{}:{id:el.dataset.run}).then(()=>loadSelfSnapshot()).catch(error=>toast(error.message)).finally(()=>{selfData.pending=false;render();});return true;
+    selfData.pending=true;if(a==='self-run'){selfData.awaitingRunIds=(selfData.snapshot?.runs||[]).map(run=>run.id);selfData.launchTime=Date.now();}render();
+    selfPost(a==='self-run'?'/api/runs':'/api/cancel',a==='self-run'?{}:{id:el.dataset.run}).then(()=>loadSelfSnapshot()).catch(error=>{selfData.awaitingRunIds=null;selfData.pending=false;toast(error.message);}).finally(()=>{if(a==='self-cancel')selfData.pending=false;render();});return true;
   }
   if(isSelfWorkspace()&&['new-session','session-more','edit-direction','toggle-pause','stop-session','session-permissions','session-to-project','new-workspace'].includes(a)){
-    if(a==='edit-direction')selfEditDirection();else selfConnectionDialog();return true;
+    if(a==='edit-direction')selfEditDirection();else if(a==='new-session'&&selfData.snapshot?.source==='local-controller')return handleSelfAction({dataset:{action:'self-run'}});else selfConnectionDialog();return true;
   }
-  if(a==='workspace-new-session'&&el.dataset.workspace===selfWorkspaceId){selfConnectionDialog();return true;}
+  if(a==='workspace-new-session'&&el.dataset.workspace===selfWorkspaceId){if(selfData.snapshot?.source==='local-controller'){activateWorkspace(selfWorkspaceId);return handleSelfAction({dataset:{action:'self-run'}});}selfConnectionDialog();return true;}
   return false;
 }
 document.addEventListener('submit',event=>{

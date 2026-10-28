@@ -2,6 +2,7 @@ import { readFile, access, mkdir, writeFile } from 'node:fs/promises';
 import { resolve, join, dirname } from 'node:path';
 import { command, cleanEnv } from './process.mjs';
 import { hash } from './repository.mjs';
+import { redactText } from './events.mjs';
 
 export const CONTRACT = 'dsh-headless-ndjson-v1';
 export class HarnessRunner {
@@ -12,9 +13,7 @@ export class HarnessRunner {
     this.bin = resolve(root, 'runtime/harness/node_modules/@deepseek-ai/dsh/lib/bin.js');
   }
   redact(text) {
-    const key = this.credentials.DEEPSEEK_API_KEY;
-    return (key ? String(text).split(key).join('[REDACTED]') : String(text))
-      .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, '[REDACTED]');
+    return redactText(text, this.credentials.DEEPSEEK_API_KEY);
   }
   async preflight() {
     const blockers = [];

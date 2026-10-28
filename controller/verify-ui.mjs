@@ -5,7 +5,10 @@ import { command } from './process.mjs';
 
 // The controller invokes this stable file by absolute path, never candidate npm scripts.
 export async function verifyUI(target) {
-  const root = resolve(target), dist = join(root, 'dist'), checks = [];
+  // macOS commonly spells a temporary directory /var/... while realpath returns /private/var/....
+  // Compare canonical paths on both sides; otherwise every valid asset is rejected.
+  const root = await realpath(resolve(target)), dist = join(root, 'dist'), checks = [];
+  if (!(await lstat(dist)).isDirectory()) throw new Error('invalid_dist_directory');
   const inside = path => { const p = relative(dist, path); return !p.startsWith('..') && !isAbsolute(p); };
   const html = await readFile(join(dist, 'index.html'), 'utf8');
   const refs = [...html.matchAll(/(?:src|href)=["']([^"']+)["']/g)].map(match => match[1])

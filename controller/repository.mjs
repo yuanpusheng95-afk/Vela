@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, rm, readdir, lstat, mkdtemp, chmod } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rm, readdir, lstat, mkdtemp, chmod, realpath } from 'node:fs/promises';
 import { resolve, join, dirname, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -12,6 +12,14 @@ export async function git(cwd, args, input) {
   return result.stdout;
 }
 export async function inspectRepository(repo) {
+  const root = await realpath(repo);
+  const top = await git(repo, ['rev-parse', '--show-toplevel']).then(value => realpath(value.trim())).catch(() => null);
+  if (!top || top !== root) {
+    return { state: 'uninitialized', head: null, branch: null, changes: [], trackedFiles: 0, files: [],
+      message: top ? '当前目录属于上级 Git 仓库。请在本目录建立独立基线后运行。' : '当前目录没有 Git 基线。ZIP 下载不包含 Git 历史。' };
+  }
+  const hasHead = await git(repo, ['rev-parse', '--verify', 'HEAD']).catch(() => '');
+  if (!hasHead.trim()) return { state: 'uninitialized', head: null, branch: null, changes: [], trackedFiles: 0, files: [], message: 'Git 仓库尚无首次提交。请先建立源码基线。' };
   const head = (await git(repo, ['rev-parse', 'HEAD'])).trim();
   const branch = (await git(repo, ['symbolic-ref', '--quiet', '--short', 'HEAD']).catch(() => '')).trim();
   const status = await git(repo, ['status', '--porcelain=v1', '-z', '--untracked-files=all']);
@@ -24,9 +32,10 @@ export async function inspectRepository(repo) {
     if (code.includes('R') || code.includes('C')) i++;
   }
   const files = (await git(repo, ['ls-tree', '-r', '--name-only', 'HEAD'])).trim().split('\n').filter(Boolean);
-  return { head, branch, changes, trackedFiles: files.length, files };
+  return { state: 'ready', head, branch, changes, trackedFiles: files.length, files };
 }
 export function assertClean(snapshot) {
+  if (snapshot.state === 'uninitialized') throw new Error(`repository_uninitialized: ${snapshot.message}`);
   const dirty = snapshot.changes.filter(change => change.path !== 'dist/self-development.json');
   if (dirty.length) throw new Error(`dirty_repository: ${dirty.map(x => x.path).join(', ')}`);
   if (!snapshot.branch) throw new Error('detached_source: 源仓库必须有可快进的当前分支。');

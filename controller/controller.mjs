@@ -1,10 +1,11 @@
-import { readFile, writeFile, mkdir, rename, rm, access } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename, rm, stat } from 'node:fs/promises';
 import { resolve, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store, ACTIVE } from './store.mjs';
 import { HarnessRunner } from './harness.mjs';
 import { inspectRepository, assertClean, prepareWorkspace, captureCandidate, verificationCheckout, integrate, git, hash } from './repository.mjs';
 import { command } from './process.mjs';
+import { projectEvent, redactText } from './events.mjs';
 
 const MODULE_ROOT = fileURLToPath(new URL('.', import.meta.url));
 const verifierFiles = ['verify-ui.mjs', 'process.mjs'];
@@ -27,6 +28,8 @@ export class Controller {
     this.store = new Store(join(stateDir, 'controller.sqlite'));
     this.running = new Map();
     this.shuttingDown = false;
+    this.detailsCache = new Map();
+    this.serviceError = null;
   }
   close() { this.store.close(); }
   async validatorHash() {
@@ -45,6 +48,8 @@ export class Controller {
 本轮最多 ${this.policy.maxChangedFiles} 个文件，最多 ${this.policy.maxRunSeconds} 秒。只可修改 dist/ 下的产品文件与 README.md，禁止修改 dist/self-development.json。
 工作区是从固定 Git SHA 导出的独立副本，没有 .git。不要初始化 Git、提交、修改控制器/测试/运行包、安装依赖、读取凭据文件、操作父目录或触发外部发布。
 稳定控制器在你完成后单独捕获差异、运行冻结验证器并决定是否整合。不要伪造验证、交付或自主运行记录。
+验收会检查 HTML 本地资源、JavaScript 语法，以及 shell-ui.js 的核心会话、插件和工具区入口。保持这些入口兼容；可在工作区运行 node controller/verify-ui.mjs . 预检，稳定控制器仍会另行验证。
+${this.store.runs(3).filter(run => ['failed','interrupted'].includes(run.status)).map(run => `最近一次未通过的工作 ${run.id.slice(0,8)}：${run.failure || run.status}。失败项：${JSON.stringify(run.verification?.checks?.filter(check => !check.passed) || run.verification?.error || [])}`).join('\n')}
 最后用简体中文简述：调查依据、选择理由、具体变更、验收方式与仍待验证之处。`;
   }
   async run() {
@@ -80,14 +85,14 @@ export class Controller {
       const result = await this.runner.execute({ workspace: prepared.workspace, runDir, prompt: this.prompt(direction), signal: abort.signal, policy: this.policy,
         onSpawn: pid => this.store.record(id, 'runner.started', { pid }),
         onEvent: event => {
-          // Full provider output stays private. The ledger records causal event identities, not reasoning or tool arguments.
-          this.store.record(id, `harness.${event.type}`, { type: event.type, sessionId: event.type === 'session' ? event.sessionId : undefined,
-            tool: ['tool_call', 'tool_result'].includes(event.type) ? String(event.name || event.tool || '').slice(0, 120) : undefined });
+          const payload = projectEvent(event, text => this.runner.redact?.(text) || redactText(text));
+          if (payload) this.store.record(id, `harness.${event.type}`, payload);
         },
       });
       if (abort.signal.aborted || result.stopped === 'cancelled') {
         return this.store.update(id, 'executing', 'cancelled', 'run.cancelled', { execution: { code: result.code, durationMs: result.durationMs } });
       }
+      this.store.update(id, 'executing', 'executing', 'runner.exited', { summary: String(result.final?.text || '').slice(0, 12000), execution: { code: result.code, durationMs: result.durationMs, eventCount: result.eventCount, stopped: result.stopped } });
       if (result.code !== 0 || result.stopped || !result.protocolValid) throw new Error(result.stopped || result.error || 'runner_protocol_or_exit');
       this.store.update(id, 'executing', 'verifying', 'runner.completed', { summary: String(result.final?.text || '').slice(0, 12000), execution: { code: result.code, durationMs: result.durationMs, eventCount: result.eventCount } });
       const candidate = await captureCandidate(prepared, this.policy);
@@ -99,19 +104,25 @@ export class Controller {
       const verify = await command(process.execPath, [join(MODULE_ROOT, 'verify-ui.mjs'), verificationPath], {
         cwd: verificationPath, signal: abort.signal, timeoutMs: 60_000, maxBytes: 1_048_576,
       });
+      const verificationLog = (this.runner.redact?.(verify.stdout + verify.stderr) || redactText(verify.stdout + verify.stderr)).split(verificationPath).join('<candidate>');
+      await writeFile(join(runDir, 'verification.log'), verificationLog, { mode: 0o600 });
       if (abort.signal.aborted) return this.store.update(id, 'verifying', 'cancelled', 'run.cancelled');
-      const report = JSON.parse(verify.stdout || '{}');
+      let report;
+      try { report = JSON.parse(this.runner.redact?.(verify.stdout) || verify.stdout || '{}'); }
+      catch { report = { passed: false, checks: [], error: '验证器未返回有效 JSON；请查看验证输出。' }; }
+      report = JSON.parse(JSON.stringify(report).split(verificationPath).join('<candidate>'));
       const cleanVerification = !(await git(verificationPath, ['status', '--porcelain'])).trim();
       const verifiedHead = (await git(verificationPath, ['rev-parse', 'HEAD'])).trim();
       if (verify.code !== 0 || verify.stopped || !report.passed || !cleanVerification || verifiedHead !== candidate.sha) {
-        return this.store.update(id, 'verifying', 'failed', 'verification.failed', { verification: report, failure: verify.stopped || report.error || 'independent_checks_failed' }, { checks: report.checks || [], error: report.error });
+        const failedCheck = report.checks?.find(check => !check.passed);
+        const failure = verify.stopped || report.error || (failedCheck ? `${failedCheck.name}：${failedCheck.detail || '检查未通过'}` : !cleanVerification ? '验证期间候选目录被修改' : verifiedHead !== candidate.sha ? '验证的代码版本与候选不一致' : '验证器退出异常');
+        return this.store.update(id, 'verifying', 'failed', 'verification.failed', { verification: report, failure, failureStage: 'verifying', verificationExitCode: verify.code }, { checks: report.checks || [], error: failure });
       }
       const evidence = { schemaVersion: 1, at: timestamp(), baseSha: data.baseSha, candidateSha: candidate.sha,
         diffHash: candidate.diffHash, policyHash: data.policyHash, validatorHash: data.validatorHash,
         runtimeVersion: data.runtimeVersion, runtimeLockHash: data.runtimeLockHash, report,
-        logHash: hash(verify.stdout), verification: 'clean-checkout-frozen-ui-v1' };
+        logHash: hash(verificationLog), verification: 'clean-checkout-frozen-ui-v1' };
       const evidenceText = JSON.stringify(evidence, null, 2);
-      await writeFile(join(runDir, 'verification.log'), verify.stdout, { mode: 0o600 });
       await writeFile(join(runDir, 'evidence.json'), evidenceText, { mode: 0o600 });
       this.store.update(id, 'verifying', 'validated', 'verification.passed', { verification: report, evidenceHash: hash(evidenceText) }, { candidateSha: candidate.sha, checks: report.checks, evidenceHash: hash(evidenceText) });
       if (abort.signal.aborted) return this.store.update(id, 'validated', 'cancelled', 'run.cancelled');
@@ -126,7 +137,7 @@ export class Controller {
         return this.store.update(id, 'integrating', 'interrupted', 'integration.uncertain', { failure: error.message });
       }
       if (ACTIVE.includes(current.status)) {
-        return this.store.update(id, current.status, abort.signal.aborted ? 'cancelled' : 'failed', abort.signal.aborted ? 'run.cancelled' : 'run.failed', { failure: this.runner.redact?.(error.message) || error.message });
+        return this.store.update(id, current.status, abort.signal.aborted ? 'cancelled' : 'failed', abort.signal.aborted ? 'run.cancelled' : 'run.failed', { failure: this.runner.redact?.(error.message) || error.message, failureStage: current.status });
       }
       throw error;
     } finally {
@@ -173,24 +184,65 @@ export class Controller {
     // No automatic replay of a prompt or an uncertain Git integration.
     return this.store.update(id, run.status, 'interrupted', 'run.reconciled', { failure: 'controller_process_lost' });
   }
-  async snapshot() {
-    const repo = await inspectRepository(this.root), runtime = await this.doctor();
-    const runs = this.store.runs().map(run => ({
+  publicRun(run, includeEvents = false) {
+    const data = {
       id: run.id, status: run.status, engine: run.engine, directionVersion: run.directionVersion,
-      runtimeVersion: run.runtimeVersion, baseSha: run.baseSha, candidateSha: run.candidateSha,
-      summary: run.summary,
+      runtimeVersion: run.runtimeVersion, baseSha: run.baseSha, candidateSha: run.candidateSha, summary: run.summary,
       integratedSha: run.integratedSha, createdAt: run.createdAt, updatedAt: run.updatedAt,
-      blockers: run.blockers, failure: run.failure, changedFiles: run.changedFiles || [],
-      verification: run.verification, execution: run.execution, evidenceHash: run.evidenceHash,
+      blockers: run.blockers, failure: run.failure, failureStage: run.failureStage, changedFiles: run.changedFiles || [],
+      verification: run.verification, verificationExitCode: run.verificationExitCode, execution: run.execution, evidenceHash: run.evidenceHash,
       diffHash: run.diffHash, deployment: run.deployment || 'not_deployed', productOutcome: 'unmeasured',
-      events: this.store.events(run.id).filter(event => !event.kind.startsWith('harness.thinking')),
-    }));
+      eventCount: this.store.eventCount(run.id),
+      // Exported snapshots retain controller evidence, not full model/tool logs. Local details are fetched on demand.
+      events: includeEvents ? this.store.events(run.id).filter(event => !event.kind.startsWith('harness.')).slice(-50) : [],
+    };
+    return JSON.parse(this.runner.redact?.(JSON.stringify(data)) || redactText(JSON.stringify(data)));
+  }
+  async runDetails(id, { before = Infinity, limit = 100 } = {}) {
+    const run = this.store.get(id), count = this.store.eventCount(id), key = `${run.updatedAt}:${count}`;
+    let cached = this.detailsCache.get(id);
+    if (cached?.key !== key) {
+      let legacy = [];
+      const path = join(this.stateDir, 'runs', id, 'stdout.jsonl');
+      try {
+        if ((await stat(path)).size <= 2_097_152) legacy = (await readFile(path, 'utf8')).split('\n').filter(Boolean).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
+      } catch { /* Existing runs may have no output file or still be executing. */ }
+      const redact = text => this.runner.redact?.(text) || redactText(text);
+      const calls = new Map(); let cursor = 0;
+      const events = this.store.events(id).filter(event => event.kind !== 'harness.thinking').map(event => {
+        if (!event.kind.startsWith('harness.')) return { ...event, payload: JSON.parse(redact(JSON.stringify(event.payload))) };
+        const type = event.kind.slice(8), index = legacy.findIndex((entry, i) => i >= cursor && entry.type === type);
+        const raw = index >= 0 ? legacy[index] : { ...event.payload, type };
+        if (index >= 0) cursor = index + 1;
+        const payload = projectEvent(raw, redact) || {};
+        if (type === 'tool_call' && payload.callId) calls.set(payload.callId, payload.tool);
+        if (type === 'tool_result') payload.tool = calls.get(payload.callId) || payload.tool || '';
+        return { ...event, payload };
+      });
+      cached = { key, events }; this.detailsCache.set(id, cached);
+      if (this.detailsCache.size > 8) this.detailsCache.delete(this.detailsCache.keys().next().value);
+    }
+    const available = cached.events.filter(event => event.seq < before), page = available.slice(-Math.min(200, Math.max(1, limit)));
+    return { run: this.publicRun(run), events: page, totalEvents: cached.events.length, hasMore: available.length > page.length, beforeSeq: page[0]?.seq ?? null };
+  }
+  async diagnostics(id) {
+    const data = await this.runDetails(id, { limit: 200 }), dir = join(this.stateDir, 'runs', id);
+    const textFile = async name => {
+      try { const text = await readFile(join(dir, name), 'utf8'); return (this.runner.redact?.(text) || redactText(text)).slice(0, 131072); }
+      catch { return null; }
+    };
+    return { schemaVersion: 1, generatedAt: timestamp(), ...data, verificationLog: await textFile('verification.log'), stderr: await textFile('stderr.log') };
+  }
+  async snapshot({ includeEvents = true } = {}) {
+    const repo = await inspectRepository(this.root), runtime = await this.doctor();
+    if (repo.state !== 'ready') { runtime.ready = false; runtime.blockers.push({ code: 'repository_uninitialized', message: repo.message }); }
+    const runs = this.store.runs().map(run => this.publicRun(run, includeEvents));
     const bootstrap = await readFile(join(this.stateDir, 'bootstrap-evidence.json'), 'utf8').then(JSON.parse).catch(() => null);
     return {
       schemaVersion: 1, generatedAt: timestamp(), source: 'controller-export',
       project: { id: this.policy.projectId, name: this.policy.name, repository: basename(this.root), direction: this.store.direction() },
-      repository: { head: repo.head, branch: repo.branch, trackedFiles: repo.trackedFiles, uncommittedFiles: repo.changes.map(change => change.path), files: repo.files },
-      runtime, runs, bootstrap,
+      repository: { state: repo.state, message: repo.message, head: repo.head, branch: repo.branch, trackedFiles: repo.trackedFiles, uncommittedFiles: repo.changes.map(change => change.path), files: repo.files },
+      runtime, runs, bootstrap, serviceError: this.serviceError,
       acceptance: { id: this.policy.verification, scope: '工程静态检查；浏览器行为、实际桌面资源占用与产品效果尚待验证', maxRunSeconds: this.policy.maxRunSeconds, maxChangedFiles: this.policy.maxChangedFiles,
         allowed: [...this.policy.allowedPrefixes, ...this.policy.allowedFiles], protected: this.policy.protectedFiles },
       metrics: { attempts: runs.length, integrated: runs.filter(run => run.status === 'integrated' && run.engine === 'deepseek-harness').length, productSuccess: null },

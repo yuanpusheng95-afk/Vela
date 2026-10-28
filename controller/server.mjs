@@ -14,7 +14,7 @@ export async function startServer(root, { port = 4317, controller: provided } = 
     const address = server.address();
     const host = `127.0.0.1:${address.port}`;
     const origin = `http://${host}`;
-    const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+    const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Vela-Controller': '1',
       'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'" };
     const send = (status, body) => { res.writeHead(status, { ...headers, 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(body)); };
     // Reject DNS rebinding and cross-origin requests. This local daemon is not a remotely callable worker.
@@ -22,7 +22,25 @@ export async function startServer(root, { port = 4317, controller: provided } = 
     try {
       const url = new URL(req.url, origin);
       if (req.method === 'GET' && url.pathname === '/api/snapshot') {
-        send(200, { ...await controller.snapshot(), source: 'local-controller', csrfToken: csrf }); return;
+        send(200, { ...await controller.snapshot({ includeEvents: false }), source: 'local-controller', csrfToken: csrf }); return;
+      }
+      const runRoute = /^\/api\/runs\/([a-f0-9-]+)(?:\/(diagnostics|diff))?$/.exec(url.pathname);
+      if (req.method === 'GET' && runRoute) {
+        const [, id, kind] = runRoute;
+        if (kind === 'diagnostics') {
+          const data = await controller.diagnostics(id);
+          res.writeHead(200, { ...headers, 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': `attachment; filename="vela-run-${id.slice(0,8)}.json"` });
+          res.end(JSON.stringify(data, null, 2)); return;
+        }
+        if (kind === 'diff') {
+          const run = controller.store.get(id);
+          if (!run.diffHash) { send(404, { error: '本轮尚未产生候选差异。' }); return; }
+          const patch = await readFile(join(controller.stateDir, 'runs', id, 'candidate.patch'), 'utf8');
+          send(200, { sha: run.candidateSha, diffHash: run.diffHash, patch: controller.runner.redact?.(patch) || patch }); return;
+        }
+        const before = url.searchParams.has('before') ? Number(url.searchParams.get('before')) : Infinity;
+        if (Number.isNaN(before)) { send(400, { error: 'invalid_cursor' }); return; }
+        send(200, await controller.runDetails(id, { before })); return;
       }
       if (req.method === 'POST' && url.pathname.startsWith('/api/')) {
         const received = Buffer.from(String(req.headers['x-vela-token'] || ''));
@@ -34,7 +52,11 @@ export async function startServer(root, { port = 4317, controller: provided } = 
         const body = JSON.parse(bodyText || '{}');
         if (url.pathname === '/api/runs') {
           if (activePromise) { send(409, { error: 'active_run' }); return; }
-          activePromise = controller.run().then(() => controller.exportSnapshot()).catch(error => { console.error(`Vela run: ${error.message}`); }).finally(() => { activePromise = null; });
+          controller.serviceError = null;
+          activePromise = controller.run().then(() => controller.exportSnapshot()).catch(error => {
+            controller.serviceError = { at: new Date().toISOString(), message: controller.runner.redact?.(error.message) || error.message };
+            console.error(`Vela run: ${controller.serviceError.message}`);
+          }).finally(() => { activePromise = null; });
           send(202, { accepted: true }); return;
         }
         if (url.pathname === '/api/cancel') { controller.cancel(body.id); send(202, { accepted: true }); return; }

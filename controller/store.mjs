@@ -68,6 +68,7 @@ export class Store {
     return this.db.prepare('SELECT * FROM events WHERE run_id=? ORDER BY seq').all(id)
       .map(row => ({ seq: row.seq, at: row.at, kind: row.kind, payload: JSON.parse(row.payload) }));
   }
+  eventCount(id) { return this.db.prepare('SELECT COUNT(*) AS count FROM events WHERE run_id=?').get(id).count; }
   update(id, expected, status, kind, patch = {}, payload = {}) {
     return this.transaction(() => {
       const run = this.get(id);
