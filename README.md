@@ -20,7 +20,7 @@
 
 ## 本地使用
 
-控制器与运行包要求 Node 24+、Git；`npm test` 和 `npm run check` 只做静态验收，已在 Node 22.22 上通过。本轮在 Linux 验证；Windows、macOS 和 Tauri WebView 尚待原生验收。
+控制器与运行包要求 Node 24+、Git；`npm test` 和 `npm run check` 已在 Node 22.22 上通过，但这不降低运行时要求。本轮在 Linux 验证；Windows、macOS 和 Tauri WebView 尚待原生验收。
 
 推荐用 `git clone https://github.com/yuanpusheng95-afk/Vela.git` 获取源码。GitHub 下载的 ZIP 不含 Git 历史；运行界面会提示先建立基线，控制器不会误用上级目录的仓库。
 
