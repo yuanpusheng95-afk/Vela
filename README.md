@@ -20,7 +20,7 @@
 
 ## 本地使用
 
-要求 Node 24+、Git。本轮在 Linux 验证；Windows、macOS 和 Tauri WebView 尚待原生验收。
+控制器与运行包要求 Node 24+、Git；`npm test` 和 `npm run check` 已在 Node 22.22 上通过，但这不降低运行时要求。本轮在 Linux 验证；Windows、macOS 和 Tauri WebView 尚待原生验收。
 
 推荐用 `git clone https://github.com/yuanpusheng95-afk/Vela.git` 获取源码。GitHub 下载的 ZIP 不含 Git 历史；运行界面会提示先建立基线，控制器不会误用上级目录的仓库。
 
@@ -49,6 +49,19 @@ npm run controller -- direction --file /absolute/path/direction.json
 ```
 
 文件范围、单轮 300 秒、最多 12 个变更文件与验收规则由 `controller/policy.json` 冻结。本阶段候选只允许修改 `dist/` 产品文件和 `README.md`，不得修改控制器、验证器、运行包、策略或 `dist/self-development.json`。
+
+### 交付前检查
+
+交付前在仓库根目录依次运行：
+
+```sh
+npm test
+npm run check
+```
+
+`npm test` 通过 Node 内置 test runner 执行 `tests/*.test.mjs`。控制器部分在独立临时 Git 仓库中验证 SQLite 重开与状态/事件一致性、并发排他、真实候选的独立检出与快进整合、失败与越界/基线变化拒绝、取消与进程丢失核对、凭据缺失和日志脱敏、Runner 的 NDJSON/版本/超时/UTF-8 行为及本地 API 来源校验；界面部分以 VM 加载 `dist/` 脚本，检查 Markdown 转义、失败展示、事件过滤与分页等。涉及仓库和数据库的测试都使用独立临时目录，不调用模型，也不依赖 `DEEPSEEK_API_KEY`。通过标准是进程退出码为 0，且汇总中 fail 与 cancelled 均为 0；任一测试失败时退出码为 1，并列出失败用例。
+
+`npm run check` 运行 `node controller/verify-ui.mjs .`，也就是控制器使用的同一份冻结 UI 验证器。它检查 `dist/index.html` 引用的本地资源都存在且不越出 `dist/`、`dist/` 中没有符号链接、所有 `.js`/`.mjs` 文件通过 `node --check` 语法检查，并确认 `dist/shell-ui.js` 仍保留会话、插件与工具区的核心入口。通过标准是退出码为 0，输出 JSON 的 `"passed": true` 且每项 `checks` 的 `passed` 均为 `true`；失败时退出码为 1，输出会给出未通过的检查项和 `detail`，或直接给出 `error`。该检查只覆盖静态结构与语法，不替代浏览器行为与视觉验收。
 
 ## 数据与恢复
 
@@ -86,15 +99,6 @@ Runner 将 NDJSON 转为自有持久事件，校验单一会话、最终响应�
 后续迁移原生 Runner 插件时保留项目、方向、运行、证据和 UI 协议。SDK 是可选执行适配器。升级先构建固定运行包，验证 Runner 合约和真实模型行为，再切换新任务；已有记录保留原版本，不跨版本续接会话。
 
 当前实现固定版本拒绝、启动探测与适配边界，尚未实现多运行包热切换/回退。正式桌面仍以 Tauri 2 薄宿主为设计目标；原生桌面桥接、上游插件宿主兼容及资源占用测量尚未实施。本轮 Node 控制器是可替换的引导实现。
-
-## 检查
-
-```sh
-npm test
-npm run check
-```
-
-测试覆盖 SQLite 重开、状态/事件一致性、并发排他、真实 Git 候选/独立检出/快进整合、失败与越界拒绝、基线变化、取消、进程丢失核对、凭据缺失、Runner NDJSON/版本不符/脱敏、超时、UTF-8 输出及本地 API 来源校验。测试位于独立临时仓库，不访问模型。
 
 ## 运行失败时
 
